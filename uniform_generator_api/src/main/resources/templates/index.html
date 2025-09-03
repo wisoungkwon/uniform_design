@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>유니폼 디자인 생성기</title>
+    <link rel="stylesheet" th:href="@{/css/style.css}">
+</head>
+<body>
+    <div th:replace="~{header :: headerFragment}"></div>
+    
+    <main>
+        <aside class="left-sidebar">
+            <div class="ad-container">
+                <p>광고 자리</p>
+            </div>
+        </aside>
+
+        <section class="main-content-section">
+            <div class="content-wrapper">
+                <section class="generator-section">
+                    <h2>디자인 옵션 선택</h2>
+                    <form id="design-form">
+                        <div class="input-container">
+                            <label for="keyword-input" class="sr-only">키워드 입력</label>
+                            <input type="text" id="keyword-input" placeholder="예: '블루 드래곤', '빨간색 호랑이'">
+                            <button type="submit" id="generate-button">디자인 생성</button>
+                        </div>
+
+                        <fieldset>
+                            <legend>유니폼 스타일</legend>
+                            <div class="radio-group">
+                                <label><input type="radio" name="style" value="baseball" checked> 야구</label>
+                                <label><input type="radio" name="style" value="basketball"> 농구</label>
+                                <label><input type="radio" name="style" value="soccer"> 축구</label>
+                                <label><input type="radio" name="style" value="volleyball"> 배구</label>
+                            </div>
+                        </fieldset>
+                    </form>
+                </section>
+
+                <section class="result-section">
+                    <figure class="uniform-figure">
+                        <img id="uniform-image" src="" alt="생성된 유니폼 이미지">
+                        <figcaption id="image-caption">키워드를 입력하고 '디자인 생성' 버튼을 눌러주세요.</figcaption>
+                    </figure>
+                </section>
+            </div>
+        </section>
+
+        <aside class="right-sidebar">
+            <div class="ad-container">
+                <p>광고 자리</p>
+            </div>
+        </aside>
+    </main>
+
+	<div th:replace="~{footer :: footerFragment}"></div>
+    <script th:src="@{/js/script.js}"></script>
+</body>
+</html>
