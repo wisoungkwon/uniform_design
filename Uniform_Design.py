@@ -1,9 +1,13 @@
-# Uniform_Design.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-import replicate
+import gc
 from dotenv import load_dotenv
+
+# Hugging Face diffusers 라이브러리 추가
+from diffusers import StableDiffusionPipeline
+import torch
+
 
 # .env 로드
 load_dotenv()
@@ -26,70 +30,32 @@ CORS(
     },
 )
 
-# Replicate 토큰
-replicate.api_token = os.environ.get("REPLICATE_API_TOKEN")
-if not replicate.api_token:
-    raise RuntimeError(
-        "REPLICATE_API_TOKEN이 설정되지 않았습니다. .env 파일을 확인하세요."
-    )
-
-# 우선순위 모델 후보 (상단일수록 먼저 시도)
-# 환경변수 REPLICATE_MODEL 이 있으면 그걸 0번 인덱스로 끼워넣음
-CANDIDATE_MODELS = [
-    "stability-ai/stable-diffusion",  # 클래식 SD 1.5 라인
-    "stability-ai/sdxl",  # SDXL
-    "runwayml/stable-diffusion-v1-5",  # 구 라인 호환
-]
-env_model = os.environ.get("REPLICATE_MODEL")
-if env_model:
-    # 가장 앞에 넣어서 최우선 시도
-    CANDIDATE_MODELS.insert(0, env_model)
+# Stable Diffusion 모델 로드 (서버 시작 시 1회만 실행)
+# 이 경로는 Stable Diffusion v1.5 모델이 있는 Hugging Face Hub를 가리킵니다.
+# 첫 실행 시에는 모델 파일을 다운로드하므로 시간이 오래 걸립니다.
+model_id = "runwayml/stable-diffusion-v1-5"
+print(f"Loading model: {model_id}...")
+# torch_dtype=torch.float16을 사용해 메모리 사용량 최적화
+pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
+# GPU로 모델 이동
+pipe.to("cuda")
 
 
-def resolve_versioned_ref(model_slug: str) -> str:
-    """
-    모델 슬러그에서 최신 버전 id를 찾아 'owner/name:version_id'로 반환.
-    일부 모델은 버전 목록을 노출하지 않아(404) 실패할 수 있음.
-    """
-    model = replicate.models.get(model_slug)
-    # 일부 모델은 versions.list()를 노출하지 않음 → 여기서 404 가능
-    versions = list(model.versions.list())
-    if not versions:
-        raise RuntimeError(f"모델 버전을 찾을 수 없음: {model_slug}")
-    latest = versions[0]  # 일반적으로 최신이 앞
-    return f"{model.owner}/{model.name}:{latest.id}"
-
-
-def get_first_working_model_ref(candidates: list[str]) -> str:
-    """
-    후보 모델들을 순서대로 시도하여, 버전 해석이 가능한 첫 모델을 반환.
-    """
-    errors = []
-    for slug in candidates:
-        try:
-            ref = resolve_versioned_ref(slug)
-            print(f"[Model] Using: {ref}")
-            return ref
-        except Exception as e:
-            msg = f"[Model] {slug} 해석 실패: {e}"
-            print(msg)
-            errors.append(msg)
-            continue
-    raise RuntimeError(
-        "모델 버전 자동 해석에 모두 실패했습니다. "
-        "REPLICATE_MODEL 환경변수에 버전 노출 모델을 지정하세요.\n" + "\n".join(errors)
-    )
+# 모델을 메모리에서 해제하는 함수
+def free_memory():
+    del pipe
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    # 어떤 모델을 시도할지 미리 보여줌
     return (
         jsonify(
             {
                 "status": "ok",
-                "replicateTokenLoaded": bool(replicate.api_token),
-                "candidateModels": CANDIDATE_MODELS,
+                "model_loaded": True,
             }
         ),
         200,
@@ -111,37 +77,29 @@ def generate_uniform():
     )
 
     try:
-        # 1) 후보 모델 중 버전 해석 가능한 모델을 하나 선택
-        model_ref = get_first_working_model_ref(CANDIDATE_MODELS)
+        # Stable Diffusion 모델 추론
+        print("Generating image...")
+        output = pipe(prompt, num_inference_steps=50, guidance_scale=7.5)
 
-        # 2) 실행 (가장 일반적인 'prompt' 파라미터 우선)
-        output = replicate.run(model_ref, input={"prompt": prompt})
+        # PIL Image 객체 반환
+        image = output.images[0]
 
-        # 3) 결과 파싱 (list/str/dict 등 대응)
-        image_url = None
-        if isinstance(output, list) and output:
-            first = output[0]
-            image_url = (
-                first
-                if isinstance(first, str)
-                else (first.get("url") if isinstance(first, dict) else None)
-            )
-        elif isinstance(output, str):
-            image_url = output
-        elif isinstance(output, dict):
-            image_url = output.get("image") or output.get("url")
+        # 이미지 저장 경로 설정 및 디렉토리 생성
+        image_dir = "static/generated_images"
+        if not os.path.exists(image_dir):
+            os.makedirs(image_dir)
 
-        if not image_url:
-            print("Replicate raw output:", output)
-            return (
-                jsonify(
-                    {
-                        "error": "이미지 URL을 파싱하지 못했습니다. 콘솔 로그를 확인하세요."
-                    }
-                ),
-                500,
-            )
+        # 파일명 생성
+        filename = f"{keyword}_{style}_{len(os.listdir(image_dir)) + 1}.png"
+        file_path = os.path.join(image_dir, filename)
 
+        # 이미지 저장
+        image.save(file_path)
+
+        # 저장된 파일 경로를 반환 (프론트엔드에서 접근 가능한 경로)
+        image_url = f"http://127.0.0.1:8000/{file_path}"
+
+        print("Image generated:", image_url)
         return (
             jsonify(
                 {"message": "이미지 생성이 완료되었습니다.", "imageUrl": image_url}
@@ -150,8 +108,8 @@ def generate_uniform():
         )
 
     except Exception as e:
-        print(f"Replicate 호출 중 오류: {e}")
-        return jsonify({"error": f"Replicate 호출 중 오류: {e}"}), 500
+        print(f"이미지 생성 중 오류: {e}")
+        return jsonify({"error": f"이미지 생성 중 오류: {e}"}), 500
 
 
 if __name__ == "__main__":
